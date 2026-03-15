@@ -10,78 +10,54 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v3
-
-      - name: Setup Node
-        uses: actions/setup-node@v3
+      - name: Label overdue issues
+        uses: actions/github-script@v7
         with:
-          node-version: 18
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const HOURS = 48;
+            const now = new Date();
 
-      - name: Install Dependencies
-        run: npm install @octokit/rest
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100
+            });
 
-      - name: Run Overdue Label Script
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          node <<'EOF'
-          import { Octokit } from "@octokit/rest";
+            for (const issue of issues.data) {
 
-          const octokit = new Octokit({
-              auth: process.env.GITHUB_TOKEN,
-          });
+              // Skip pull requests
+              if (issue.pull_request) continue;
 
-          const owner = process.env.GITHUB_REPOSITORY.split("/")[0];
-          const repo = process.env.GITHUB_REPOSITORY.split("/")[1];
+              const lastUpdated = new Date(issue.updated_at);
+              const diffHours = (now - lastUpdated) / (1000 * 60 * 60);
 
-          const HOURS = 48;
+              const labels = issue.labels.map(l => l.name);
 
-          async function run() {
-              const issues = await octokit.issues.listForRepo({
-                  owner,
-                  repo,
-                  state: "open",
-                  per_page: 100,
-              });
+              // Add overdue label
+              if (diffHours >= HOURS && !labels.includes("overdue")) {
 
-              const now = new Date();
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ["overdue"]
+                });
 
-              for (const issue of issues.data) {
-                  // skip pull requests
-                  if (issue.pull_request) continue;
-
-                  const lastUpdated = new Date(issue.updated_at);
-                  const diffHours = (now - lastUpdated) / (1000 * 60 * 60);
-
-                  const labels = issue.labels.map((l) => l.name);
-
-                  // ADD label if overdue
-                  if (diffHours >= HOURS && !labels.includes("overdue")) {
-                      await octokit.issues.addLabels({
-                          owner,
-                          repo,
-                          issue_number: issue.number,
-                          labels: ["overdue"],
-                      });
-
-                      console.log(`Added overdue label to issue #${issue.number}`);
-                  }
-
-                  // REMOVE label if issue becomes active again
-                  if (diffHours < HOURS && labels.includes("overdue")) {
-                      await octokit.issues.removeLabel({
-                          owner,
-                          repo,
-                          issue_number: issue.number,
-                          name: "overdue",
-                      });
-
-                      console.log(`Removed overdue label from issue #${issue.number}`);
-                  }
+                console.log(`Added overdue label to issue #${issue.number}`);
               }
-          }
 
-          run();
-          EOF
+              // Remove overdue label if issue becomes active again
+              if (diffHours < HOURS && labels.includes("overdue")) {
+
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  name: "overdue"
+                });
+
+                console.log(`Removed overdue label from issue #${issue.number}`);
+              }
+            }
